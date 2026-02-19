@@ -1,0 +1,1072 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Grand Slalom</title>
+  <style>
+    /* ---- Base styles: black background, centered canvas ---- */
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #000;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      height: 100vh;
+      overflow: hidden;
+      font-family: 'Segoe UI', Arial, sans-serif;
+    }
+    canvas { display: block; cursor: none; }
+  </style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<script>
+// ================================================================
+//  GRAND SLALOM  —  Pseudo-3D Skiing Game
+//  Vanilla JS + HTML5 Canvas. No libraries.
+// ================================================================
+//
+//  HOW THE 3-D TRICK WORKS
+//  ─────────────────────────
+//  We use a single "projection" formula that converts a world
+//  position (worldX, depth) into a 2-D screen position:
+//
+//    scale  = PERSP / (PERSP + depth)   ← 0 (far) → 1 (near)
+//    screenX = CX + worldX * ROAD_W * scale
+//    screenY = HORIZON + (GROUND − HORIZON) * scale
+//
+//  Objects with greater depth are closer to the horizon and appear
+//  smaller. That's it – no matrix math needed!
+//
+//  CODE SECTIONS
+//  ─────────────
+//  1. Constants & canvas setup
+//  2. Level definitions
+//  3. Game state variables
+//  4. Input handling
+//  5. Level initialisation (generateGates, generateTrees, startLevel)
+//  6. Physics update
+//  7. Rendering helpers
+//  8. Main render function
+//  9. UI screens (start, results)
+//  10. Game loop
+// ================================================================
+
+
+// ================================================================
+//  1. CONSTANTS & CANVAS SETUP
+// ================================================================
+
+const canvas = document.getElementById('c');
+const ctx    = canvas.getContext('2d');
+
+// Lock the canvas to a fixed virtual resolution so the game looks
+// the same on every screen size.
+const W = 800, H = 600;
+canvas.width  = W;
+canvas.height = H;
+
+// Scale the canvas element to fill the window while keeping aspect ratio
+function resize() {
+  const scale = Math.min(window.innerWidth / W, window.innerHeight / H);
+  canvas.style.width  = W * scale + 'px';
+  canvas.style.height = H * scale + 'px';
+}
+resize();
+window.addEventListener('resize', resize);
+
+// --- Perspective constants ---
+const CX      = W / 2;    // Screen centre X (vanishing point)
+const HORIZON = 155;      // Y coordinate of the horizon line
+const GROUND  = H - 70;   // Y coordinate of "feet" level (below skier)
+const PERSP   = 380;      // Focal length – higher = flatter perspective
+const ROAD_W  = 340;      // Half-width of the piste at near-plane (pixels)
+
+
+// ================================================================
+//  2. LEVEL DEFINITIONS
+//  Each object describes one slope's feel, difficulty, and visuals.
+// ================================================================
+
+const LEVELS = [
+  {
+    // ── Level 1: Easy warm-up ──
+    id: 0,
+    name: 'Alpine Meadow',
+    subtitle: 'A gentle beginning',
+    numGates: 14,
+    baseSpeed: 2.4,          // World units scrolled per 16 ms frame
+    maxSpeed: 4.5,
+    accel: 0.00045,          // Speed increase per ms
+    gateInterval: 1900,      // World-Z gap between gate centres
+    gateWidthMin: 210,       // Minimum gate opening (world units)
+    gateWidthMax: 290,
+    gateOffsetMax: 0.55,     // Max lateral centre shift (−1…+1 scale)
+    skyTop: '#3A7BD5',
+    skyBot: '#93C5E8',
+    snowA: '#FFFFFF',        // Alternating stripe colours for the slope
+    snowB: '#EEF6FF',
+    sideColor: '#7EB87A',    // Off-piste terrain colour
+    fogDist: 99999,          // Distance at which full fog opacity applies
+    fogColor: 'rgba(255,255,255,0)',
+    treeCount: 90,
+    treeSideSpread: 1.0,
+    sunTint: null,
+  },
+  {
+    // ── Level 2: Icy ridge ──
+    id: 1,
+    name: 'Glacier Ridge',
+    subtitle: 'Watch for ice',
+    numGates: 16,
+    baseSpeed: 3.2,
+    maxSpeed: 5.8,
+    accel: 0.00055,
+    gateInterval: 1650,
+    gateWidthMin: 180,
+    gateWidthMax: 255,
+    gateOffsetMax: 0.62,
+    skyTop: '#1E5799',
+    skyBot: '#7DB9D9',
+    snowA: '#E8F4FC',
+    snowB: '#D2E8F5',
+    sideColor: '#8AABB8',
+    fogDist: 6000,
+    fogColor: 'rgba(190,225,245,0.55)',
+    treeCount: 65,
+    treeSideSpread: 1.2,
+    sunTint: null,
+  },
+  {
+    // ── Level 3: Stormy peak with visibility-reducing fog ──
+    id: 2,
+    name: 'Storm Peak',
+    subtitle: 'Visibility is dropping',
+    numGates: 18,
+    baseSpeed: 4.0,
+    maxSpeed: 7.0,
+    accel: 0.00070,
+    gateInterval: 1450,
+    gateWidthMin: 155,
+    gateWidthMax: 220,
+    gateOffsetMax: 0.68,
+    skyTop: '#3B3B5C',
+    skyBot: '#7070A0',
+    snowA: '#D8D8EC',
+    snowB: '#C5C5DC',
+    sideColor: '#565668',
+    fogDist: 2800,
+    fogColor: 'rgba(160,160,200,0.72)',
+    treeCount: 50,
+    treeSideSpread: 1.4,
+    sunTint: 'rgba(80,80,130,0.08)',
+  },
+  {
+    // ── Level 4: Nightfall expert run ──
+    id: 3,
+    name: 'Black Diamond',
+    subtitle: 'Experts only',
+    numGates: 20,
+    baseSpeed: 5.0,
+    maxSpeed: 9.0,
+    accel: 0.00090,
+    gateInterval: 1250,
+    gateWidthMin: 130,
+    gateWidthMax: 185,
+    gateOffsetMax: 0.75,
+    skyTop: '#0A0A1E',
+    skyBot: '#252545',
+    snowA: '#C8C8E0',
+    snowB: '#B8B8D4',
+    sideColor: '#303048',
+    fogDist: 4000,
+    fogColor: 'rgba(30,30,80,0.65)',
+    treeCount: 60,
+    treeSideSpread: 0.9,
+    sunTint: 'rgba(40,0,100,0.10)',
+  },
+  {
+    // ── Level 5: Sunset summit – fastest, tightest ──
+    id: 4,
+    name: 'Summit Rush',
+    subtitle: 'The ultimate challenge',
+    numGates: 22,
+    baseSpeed: 6.5,
+    maxSpeed: 12.0,
+    accel: 0.00130,
+    gateInterval: 1050,
+    gateWidthMin: 108,
+    gateWidthMax: 160,
+    gateOffsetMax: 0.80,
+    skyTop: '#B34700',
+    skyBot: '#FF9A44',
+    snowA: '#FFE5CC',
+    snowB: '#FFD0A8',
+    sideColor: '#A05020',
+    fogDist: 5000,
+    fogColor: 'rgba(255,140,60,0.45)',
+    treeCount: 75,
+    treeSideSpread: 0.8,
+    sunTint: 'rgba(255,120,40,0.12)',
+  },
+];
+
+
+// ================================================================
+//  3. GAME STATE VARIABLES
+//  All mutable game data lives here so it's easy to track.
+// ================================================================
+
+let gameState    = 'start';   // 'start' | 'playing' | 'results'
+let currentLevel = 0;
+let lvl          = LEVELS[0]; // Active level data (shorthand)
+
+// ── Player ──
+const player = {
+  x:     0,      // Lateral world position (−1 = left edge, +1 = right edge)
+  vx:    0,      // Lateral velocity
+  lean:  0,      // Visual lean angle (degrees, updated smoothly)
+};
+
+// ── World / camera ──
+let cameraZ     = 0;   // How far the camera has scrolled down the mountain
+let speed       = 0;   // Current scroll speed (world units / 16 ms)
+let elapsed     = 0;   // Run time in seconds
+let lastTS      = 0;   // Timestamp of previous frame (for delta-time)
+let penalties   = 0;   // Accumulated penalty seconds
+let penaltyFlash= 0;   // Countdown (ms) for the red flash on a missed gate
+let gatesPassed = 0;
+let gatesMissed = 0;
+
+// ── Object arrays ──
+let gates     = [];   // Gate objects
+let trees     = [];   // Tree objects
+let snowflakes= [];   // Decorative snowflake particles
+
+// ── Results (saved when run ends) ──
+let resultTime     = 0;
+let resultPenalty  = 0;
+let resultScore    = 0;
+
+
+// ================================================================
+//  4. INPUT HANDLING
+//  We track which keys are held down using a simple lookup object.
+// ================================================================
+
+const keys = {};
+
+document.addEventListener('keydown', e => {
+  keys[e.key] = true;
+
+  // Prevent arrow keys / space from scrolling the page
+  if (['ArrowLeft','ArrowRight','ArrowUp','ArrowDown',' ','Enter'].includes(e.key)) {
+    e.preventDefault();
+  }
+
+  // Advance through UI screens on Space / Enter
+  if (e.key === ' ' || e.key === 'Enter') onConfirm();
+});
+
+document.addEventListener('keyup', e => { keys[e.key] = false; });
+
+// Called when the player presses Space / Enter on a UI screen
+function onConfirm() {
+  if (gameState === 'start') {
+    startLevel(0);
+  } else if (gameState === 'results') {
+    if (currentLevel < LEVELS.length - 1) {
+      startLevel(currentLevel + 1);  // Advance to next level
+    } else {
+      currentLevel = 0;
+      gameState = 'start';           // Loop back to title
+    }
+  }
+}
+
+
+// ================================================================
+//  5. LEVEL INITIALISATION
+// ================================================================
+
+// --- Projection helper ---
+// Converts a world (x, depth) pair into screen (x, y) plus a scale factor.
+// Returns null if the object is behind the camera.
+function project(worldX, depth) {
+  if (depth <= 0) return null;
+  const scale = PERSP / (PERSP + depth);
+  return {
+    x:     CX + worldX * ROAD_W * scale,
+    y:     HORIZON + (GROUND - HORIZON) * scale,
+    scale: scale,
+  };
+}
+
+// How deep (in front of camera) is an object that lives at worldZ?
+function depthOf(worldZ) { return worldZ - cameraZ; }
+
+// --- Gate generation ---
+// Gates are pairs of coloured poles the player must ski between.
+function generateGates(l) {
+  gates = [];
+  let z = 3500;    // First gate spawns this far ahead of start position
+  let isRed = true;
+
+  for (let i = 0; i < l.numGates; i++) {
+    // Random centre offset so the course weaves left and right
+    const cx   = (Math.random() * 2 - 1) * l.gateOffsetMax;
+    // Gate half-width in "world X" units (converts pixel width to world scale)
+    const hw   = (l.gateWidthMin + Math.random() * (l.gateWidthMax - l.gateWidthMin)) / ROAD_W / 2;
+
+    gates.push({
+      z:       z,
+      cx:      cx,            // Centre X in world coords
+      leftX:   cx - hw,
+      rightX:  cx + hw,
+      color:   isRed ? 'red' : 'blue',
+      passed:  false,
+      missed:  false,
+    });
+
+    isRed = !isRed;
+    // Random interval between gates (±20 %) to keep the player guessing
+    z += l.gateInterval * (0.82 + Math.random() * 0.36);
+  }
+}
+
+// --- Tree generation ---
+// Trees are placed randomly on both sides of the piste.
+function generateTrees(l) {
+  trees = [];
+  const totalZ = l.numGates * l.gateInterval + 4000;
+
+  for (let i = 0; i < l.treeCount * 2; i++) {
+    const side   = i % 2 === 0 ? -1 : 1;
+    // Place trees just beyond the road edge, varying in distance from piste
+    const worldX = side * (1.05 + Math.random() * 1.6 * l.treeSideSpread);
+    const worldZ = 500 + Math.random() * totalZ;
+    const h      = 0.7  + Math.random() * 0.9;  // Height variation
+    const w      = 0.28 + Math.random() * 0.25;  // Width variation
+
+    trees.push({ x: worldX, z: worldZ, h, w });
+  }
+  // Sort back-to-front so distant trees are drawn before close ones
+  trees.sort((a, b) => b.z - a.z);
+}
+
+// --- Snowflake generation ---
+function generateSnow() {
+  snowflakes = [];
+  for (let i = 0; i < 70; i++) {
+    snowflakes.push({
+      x: Math.random() * W,
+      y: Math.random() * H,
+      r: 0.5 + Math.random() * 1.8,
+      vy: 0.6 + Math.random() * 1.2,
+      vx: (Math.random() - 0.5) * 0.4,
+    });
+  }
+}
+
+// --- Start a level ---
+function startLevel(index) {
+  currentLevel = index;
+  lvl          = LEVELS[index];
+  gameState    = 'playing';
+
+  // Reset player
+  player.x    = 0;
+  player.vx   = 0;
+  player.lean = 0;
+
+  // Reset world state
+  cameraZ      = 0;
+  speed        = lvl.baseSpeed;
+  elapsed      = 0;
+  lastTS       = performance.now();
+  penalties    = 0;
+  penaltyFlash = 0;
+  gatesPassed  = 0;
+  gatesMissed  = 0;
+
+  generateGates(lvl);
+  generateTrees(lvl);
+  generateSnow();
+}
+
+
+// ================================================================
+//  6. PHYSICS UPDATE
+//  Called every frame with dt = milliseconds since last frame.
+// ================================================================
+
+function update(dt) {
+  // Cap dt to avoid giant jumps if the tab was backgrounded
+  dt = Math.min(dt, 50);
+
+  // ── Lateral player control ──
+  // The player has momentum: pressing a key accelerates, releasing decelerates.
+  const TURN_ACCEL = 0.0075;
+  const FRICTION   = 0.86;
+  const MAX_VX     = 0.016;
+
+  if (keys['ArrowLeft'])  player.vx -= TURN_ACCEL;
+  if (keys['ArrowRight']) player.vx += TURN_ACCEL;
+
+  player.vx = Math.max(-MAX_VX, Math.min(MAX_VX, player.vx)) * FRICTION;
+  player.x  = Math.max(-1.0, Math.min(1.0, player.x + player.vx));
+
+  // Lean smoothly tracks the turn velocity
+  player.lean += (-player.vx * 2200 - player.lean) * 0.14;
+
+  // ── Speed progression ──
+  speed = Math.min(lvl.maxSpeed, speed + lvl.accel * dt);
+
+  // ── Scroll the world ──
+  // Normalise to 60 fps so speed values feel consistent regardless of framerate
+  cameraZ += speed * (dt / 16.667);
+
+  // ── Timer ──
+  elapsed += dt / 1000;
+
+  // ── Penalty flash countdown ──
+  if (penaltyFlash > 0) penaltyFlash -= dt;
+
+  // ── Gate collision ──
+  for (const gate of gates) {
+    if (gate.passed || gate.missed) continue;
+    const d = depthOf(gate.z);
+
+    // Gate has just passed behind the camera
+    if (d <= 0) {
+      const hit = player.x >= gate.leftX && player.x <= gate.rightX;
+      if (hit) {
+        gate.passed = true;
+        gatesPassed++;
+      } else {
+        gate.missed = true;
+        gatesMissed++;
+        penalties   += 2;        // 2-second penalty per missed gate
+        penaltyFlash = 1600;
+      }
+    }
+  }
+
+  // ── End of run ──
+  const lastGate = gates[gates.length - 1];
+  if (lastGate && depthOf(lastGate.z) < -800) {
+    resultTime    = elapsed;
+    resultPenalty = penalties;
+    // Score: 10000 base, minus elapsed seconds × 50, minus penalty seconds × 150
+    resultScore   = Math.max(0, Math.round(10000 - elapsed * 50 - penalties * 150));
+    gameState     = 'results';
+  }
+
+  // ── Update snowflakes ──
+  for (const s of snowflakes) {
+    s.x += s.vx + (keys['ArrowLeft'] ? 1.5 : keys['ArrowRight'] ? -1.5 : 0);
+    s.y += s.vy * (speed / lvl.baseSpeed);
+    if (s.y > H + 5) { s.y = -5; s.x = Math.random() * W; }
+    if (s.x < 0)     s.x = W;
+    if (s.x > W)     s.x = 0;
+  }
+}
+
+
+// ================================================================
+//  7. RENDERING HELPERS
+//  Small focused functions, each responsible for one visual element.
+// ================================================================
+
+// --- Sky ---
+function drawSky() {
+  const g = ctx.createLinearGradient(0, 0, 0, HORIZON);
+  g.addColorStop(0, lvl.skyTop);
+  g.addColorStop(1, lvl.skyBot);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, HORIZON);
+
+  // Subtle sun/glow near horizon for some levels
+  if (lvl.id === 4) {
+    const sg = ctx.createRadialGradient(CX, HORIZON, 5, CX, HORIZON, 200);
+    sg.addColorStop(0, 'rgba(255,220,80,0.45)');
+    sg.addColorStop(1, 'rgba(255,140,40,0)');
+    ctx.fillStyle = sg;
+    ctx.fillRect(0, 0, W, HORIZON + 40);
+  }
+  if (lvl.id === 3) {
+    // Stars for night level
+    ctx.fillStyle = 'rgba(255,255,255,0.8)';
+    for (let i = 0; i < 60; i++) {
+      // Deterministic star positions (seeded by index)
+      const sx = ((i * 137 + 50) % W);
+      const sy = ((i * 97  + 20) % HORIZON);
+      ctx.fillRect(sx, sy, 1, 1);
+    }
+  }
+}
+
+// --- Animated slope ---
+// Draws the piste as a perspective trapezoid with scrolling stripe bands.
+function drawSlope() {
+  // Draw off-piste terrain first (fills the whole ground area)
+  ctx.fillStyle = lvl.sideColor;
+  ctx.fillRect(0, HORIZON, W, H - HORIZON);
+
+  // The slope itself: stripes whose world-Z boundaries scroll with the camera.
+  // This creates the illusion that the snow is rushing toward you.
+  const STRIPE_WORLD = 500;     // World units per stripe pair
+  const offset = cameraZ % STRIPE_WORLD;  // Animate by current camera position
+  const BANDS  = 22;
+
+  for (let i = 0; i < BANDS; i++) {
+    // World depth of this stripe's far and near edges
+    const dFar  = (i     * STRIPE_WORLD) - offset;
+    const dNear = ((i+1) * STRIPE_WORLD) - offset;
+
+    // Project both edges to screen Y (clamp to visible range)
+    const scaleFar  = dFar  > 0 ? PERSP / (PERSP + dFar)  : 1.0;
+    const scaleNear = dNear > 0 ? PERSP / (PERSP + dNear) : 1.0;
+
+    const yFar  = HORIZON + (GROUND - HORIZON) * scaleFar;
+    const yNear = HORIZON + (GROUND - HORIZON) * scaleNear;
+
+    // Skip stripes entirely above or below the visible slope area
+    if (yFar  > H + 2)    continue;
+    if (yNear < HORIZON)  continue;
+
+    // Alternate two snow colours for the stripe pattern
+    ctx.fillStyle = i % 2 === 0 ? lvl.snowA : lvl.snowB;
+
+    // Draw a trapezoid matching the road edges at each depth
+    ctx.beginPath();
+    ctx.moveTo(CX - ROAD_W * scaleFar,  yFar);
+    ctx.lineTo(CX + ROAD_W * scaleFar,  yFar);
+    ctx.lineTo(CX + ROAD_W * scaleNear, yNear);
+    ctx.lineTo(CX - ROAD_W * scaleNear, yNear);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  // Road edge lines (thin dark borders)
+  ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+  ctx.lineWidth = 1.5;
+  ctx.beginPath();
+  ctx.moveTo(CX, HORIZON);
+  ctx.lineTo(CX - ROAD_W, GROUND);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(CX, HORIZON);
+  ctx.lineTo(CX + ROAD_W, GROUND);
+  ctx.stroke();
+}
+
+// --- Trees ---
+// Classic evergreen silhouette – three stacked triangles.
+function drawTree(tx, tz) {
+  const d = depthOf(tz);
+  if (d <= 10) return;
+  const p = project(tx, d);
+  if (!p) return;
+
+  // Don't draw trees that are off-screen
+  if (p.x < -60 || p.x > W + 60) return;
+  if (p.y < HORIZON || p.y > H + 20) return;
+
+  const treeH = 90 * p.scale;   // Tree height scales with distance
+  const treeW = 34 * p.scale;   // Tree width
+
+  // Apply fog: distant trees fade to fog colour
+  const fogT = Math.min(1, d / lvl.fogDist);
+  const alpha = Math.max(0, 1 - fogT * 0.95);
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+
+  // Three overlapping triangles (far, mid, near of the crown)
+  const layers = [
+    { yOff: 0,         wMul: 0.6, hMul: 0.5  },
+    { yOff: treeH*0.3, wMul: 0.8, hMul: 0.45 },
+    { yOff: treeH*0.55,wMul: 1.0, hMul: 0.5  },
+  ];
+
+  // Trunk
+  ctx.fillStyle = '#5C3A1E';
+  const trunkW = treeW * 0.12;
+  const trunkH = treeH * 0.20;
+  ctx.fillRect(p.x - trunkW/2, p.y - trunkH, trunkW, trunkH);
+
+  // Crown layers (dark green evergreen)
+  ctx.fillStyle = lvl.id === 3 ? '#1A2A1A' : '#1E4A28';
+  for (const lay of layers) {
+    const bx = p.x;
+    const by = p.y - lay.yOff - trunkH;
+    const hw = treeW * lay.wMul;
+    const lh = treeH * lay.hMul;
+    ctx.beginPath();
+    ctx.moveTo(bx - hw, by);
+    ctx.lineTo(bx + hw, by);
+    ctx.lineTo(bx,       by - lh);
+    ctx.closePath();
+    ctx.fill();
+  }
+
+  ctx.restore();
+}
+
+// --- Gate poles ---
+// Each gate is a pair of coloured poles with a horizontal banner.
+function drawGate(gate) {
+  const d = depthOf(gate.z);
+  if (d <= 5) return;
+  if (d > 12000) return;  // Too far away, skip
+
+  const fogT  = Math.min(1, d / lvl.fogDist);
+  const alpha = Math.max(0, 1 - fogT * 0.9);
+
+  const pL = project(gate.leftX,  d);
+  const pR = project(gate.rightX, d);
+  if (!pL || !pR) return;
+
+  // Pole dimensions scale with distance
+  const poleH = 80  * pL.scale;
+  const poleW =  8  * pL.scale;
+  const flagH = 14  * pL.scale;
+
+  // Colour scheme: red gates → red/white, blue gates → blue/white
+  const mainColor = gate.color === 'red' ? '#E02020' : '#1E6EDA';
+  const altColor  = '#FFFFFF';
+
+  ctx.save();
+  ctx.globalAlpha = alpha;
+
+  // Draw both poles
+  for (const [px, py] of [[pL.x, pL.y], [pR.x, pR.y]]) {
+    // Pole shaft (two-colour striped look)
+    ctx.fillStyle = mainColor;
+    ctx.fillRect(px - poleW/2, py - poleH, poleW, poleH * 0.6);
+    ctx.fillStyle = altColor;
+    ctx.fillRect(px - poleW/2, py - poleH * 0.4, poleW, poleH * 0.4);
+
+    // Pole cap ball
+    ctx.beginPath();
+    ctx.arc(px, py - poleH, poleW * 0.7, 0, Math.PI * 2);
+    ctx.fillStyle = mainColor;
+    ctx.fill();
+  }
+
+  // Horizontal banner connecting the two poles
+  const bannerY = Math.min(pL.y, pR.y) - poleH * 0.85;
+  const bannerH2 = flagH;
+  ctx.fillStyle = mainColor;
+  ctx.fillRect(pL.x, bannerY, pR.x - pL.x, bannerH2);
+
+  // Indicate passed/missed status
+  if (gate.passed) {
+    ctx.fillStyle = 'rgba(0,255,80,0.18)';
+    ctx.fillRect(pL.x, bannerY - poleH * 0.6, pR.x - pL.x, poleH * 0.6);
+  }
+  if (gate.missed) {
+    ctx.fillStyle = 'rgba(255,0,0,0.22)';
+    ctx.fillRect(pL.x, bannerY - poleH * 0.6, pR.x - pL.x, poleH * 0.6);
+  }
+
+  ctx.restore();
+}
+
+// --- Fog overlay ---
+// Simulates atmospheric depth by fading distant objects to a colour.
+function drawFog() {
+  if (!lvl.fogColor || lvl.fogDist >= 99999) return;
+  // Horizontal gradient: transparent at bottom, foggy at top/horizon
+  const g = ctx.createLinearGradient(0, GROUND, 0, HORIZON);
+  g.addColorStop(0, 'rgba(0,0,0,0)');
+  g.addColorStop(1, lvl.fogColor);
+  ctx.fillStyle = g;
+  ctx.fillRect(0, HORIZON, W, GROUND - HORIZON);
+}
+
+// --- Optional ambient tint ---
+// Overlays a semi-transparent colour for mood (night, storm, sunset).
+function drawTint() {
+  if (!lvl.sunTint) return;
+  ctx.fillStyle = lvl.sunTint;
+  ctx.fillRect(0, 0, W, H);
+}
+
+// --- Skier character ---
+// A simple geometric figure seen from behind, leaning into turns.
+function drawSkier() {
+  const sx = CX + player.x * ROAD_W;   // Screen X based on player position
+  const sy = GROUND + 10;               // Just above "ground" level
+
+  ctx.save();
+  ctx.translate(sx, sy);
+  ctx.rotate(player.lean * Math.PI / 180);
+
+  // Shadow
+  ctx.fillStyle = 'rgba(0,0,0,0.18)';
+  ctx.beginPath();
+  ctx.ellipse(0, 2, 18, 6, 0, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Skis (two dark rectangles angled slightly apart)
+  ctx.fillStyle = '#1A1A2E';
+  ctx.save();
+  ctx.rotate(-0.06);
+  ctx.fillRect(-18, 2, 36, 5);
+  ctx.restore();
+
+  // Legs
+  ctx.fillStyle = '#2255AA';
+  ctx.fillRect(-10, -22, 8, 24);
+  ctx.fillRect(2,   -22, 8, 24);
+
+  // Body (jacket)
+  ctx.fillStyle = '#E03030';
+  ctx.fillRect(-12, -46, 24, 28);
+
+  // Arms (slightly spread, lean with body)
+  ctx.fillStyle = '#E03030';
+  ctx.save();
+  ctx.rotate( 0.2 + player.lean * 0.015);
+  ctx.fillRect( 12, -44, 20, 7);
+  ctx.restore();
+  ctx.save();
+  ctx.rotate(-0.2 + player.lean * 0.015);
+  ctx.fillRect(-32, -44, 20, 7);
+  ctx.restore();
+
+  // Poles (two thin lines)
+  ctx.strokeStyle = '#888';
+  ctx.lineWidth = 2;
+  ctx.beginPath(); ctx.moveTo( 28, -38); ctx.lineTo( 38, 8); ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(-28, -38); ctx.lineTo(-38, 8); ctx.stroke();
+
+  // Head / helmet
+  ctx.fillStyle = '#CC0000';
+  ctx.beginPath();
+  ctx.arc(0, -52, 12, 0, Math.PI * 2);
+  ctx.fill();
+
+  // Goggles
+  ctx.fillStyle = '#FFD700';
+  ctx.beginPath();
+  ctx.arc(0, -50, 7, Math.PI * 0.1, Math.PI * 0.9);
+  ctx.fill();
+
+  ctx.restore();
+}
+
+// --- Snowflakes ---
+function drawSnow() {
+  ctx.fillStyle = 'rgba(255,255,255,0.85)';
+  for (const s of snowflakes) {
+    ctx.beginPath();
+    ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+    ctx.fill();
+  }
+}
+
+// --- HUD (heads-up display) ---
+// Shows key metrics during gameplay.
+function drawHUD() {
+  // Semi-transparent panel at the top
+  ctx.fillStyle = 'rgba(0,0,0,0.38)';
+  ctx.fillRect(0, 0, W, 52);
+
+  ctx.textBaseline = 'middle';
+  ctx.textAlign    = 'left';
+
+  // Speed indicator
+  const kmh = Math.round(speed * 18);   // rough km/h equivalent
+  ctx.fillStyle = '#FFFFFF';
+  ctx.font = 'bold 13px Segoe UI, Arial';
+  ctx.fillText('SPEED', 14, 18);
+  ctx.font = 'bold 22px Segoe UI, Arial';
+  ctx.fillText(kmh + ' km/h', 14, 38);
+
+  // Level name (centre)
+  ctx.textAlign = 'center';
+  ctx.font = 'bold 15px Segoe UI, Arial';
+  ctx.fillStyle = '#FFE066';
+  ctx.fillText(lvl.name.toUpperCase(), CX, 20);
+  ctx.font = '12px Segoe UI, Arial';
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.fillText(`Level ${currentLevel + 1} of ${LEVELS.length}`, CX, 37);
+
+  // Timer (right side)
+  ctx.textAlign = 'right';
+  const mins    = Math.floor(elapsed / 60);
+  const secs    = (elapsed % 60).toFixed(2).padStart(5, '0');
+  const timeStr = `${mins}:${secs}`;
+  ctx.font = 'bold 13px Segoe UI, Arial';
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillText('TIME', W - 14, 18);
+  ctx.font = 'bold 22px Segoe UI, Arial';
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillText(timeStr, W - 14, 38);
+
+  // Penalty display
+  if (penalties > 0) {
+    ctx.textAlign = 'center';
+    ctx.font      = 'bold 14px Segoe UI, Arial';
+    ctx.fillStyle = penaltyFlash > 0 && Math.floor(penaltyFlash / 150) % 2 === 0
+      ? '#FF4444' : 'rgba(255,120,120,0.85)';
+    ctx.fillText(`⚠ +${penalties}s penalty`, CX, 68);
+  }
+
+  // Gate counter (bottom-left)
+  ctx.textAlign = 'left';
+  ctx.font      = '12px Segoe UI, Arial';
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.fillText(`Gates: ${gatesPassed} ✓  ${gatesMissed} ✗`, 14, H - 14);
+
+  // Penalty flash: full-screen red pulse
+  if (penaltyFlash > 0) {
+    const alpha = Math.min(0.35, (penaltyFlash / 1600) * 0.4);
+    ctx.fillStyle = `rgba(220,0,0,${alpha})`;
+    ctx.fillRect(0, 0, W, H);
+
+    if (Math.floor(penaltyFlash / 150) % 2 === 0) {
+      ctx.textAlign    = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.font         = 'bold 36px Segoe UI, Arial';
+      ctx.fillStyle    = '#FF3333';
+      ctx.fillText('MISSED GATE! +2s', CX, H / 2 - 30);
+    }
+  }
+}
+
+
+// ================================================================
+//  8. MAIN RENDER FUNCTION
+//  Orchestrates all drawing in the correct back-to-front order.
+// ================================================================
+
+function render() {
+  // Clear
+  ctx.clearRect(0, 0, W, H);
+
+  if (gameState === 'playing') {
+    drawSky();      // 1. Sky background
+    drawSlope();    // 2. Piste (snow with scrolling stripes)
+
+    // 3. Trees (already sorted back-to-front)
+    for (const t of trees) drawTree(t.x, t.z);
+
+    // 4. Gates (sort by depth so far gates are drawn first)
+    const sortedGates = [...gates].sort((a, b) => depthOf(b.z) - depthOf(a.z));
+    for (const g of sortedGates) drawGate(g);
+
+    drawFog();      // 5. Fog overlay (atmospheric depth)
+    drawSkier();    // 6. Player character (always in front)
+    drawSnow();     // 7. Snowflakes (particle effect on top of everything)
+    drawTint();     // 8. Ambient colour tint
+    drawHUD();      // 9. HUD last so it's always readable
+
+  } else if (gameState === 'start') {
+    drawStartScreen();
+  } else if (gameState === 'results') {
+    drawResultsScreen();
+  }
+}
+
+
+// ================================================================
+//  9. UI SCREENS
+// ================================================================
+
+function drawStartScreen() {
+  // Background: simple slope preview
+  const bgGrad = ctx.createLinearGradient(0, 0, 0, H);
+  bgGrad.addColorStop(0, '#1A4A8A');
+  bgGrad.addColorStop(0.4, '#6BA3C8');
+  bgGrad.addColorStop(0.4, '#FFFFFF');
+  bgGrad.addColorStop(1,   '#E8F4FF');
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Decorative trees
+  ctx.fillStyle = '#1E4A28';
+  for (let i = 0; i < 7; i++) {
+    const tx = 60 + i * 100;
+    const ty = 230 + Math.sin(i * 1.3) * 20;
+    const th = 60 + Math.sin(i * 0.9) * 20;
+    ctx.beginPath();
+    ctx.moveTo(tx - 18, ty); ctx.lineTo(tx + 18, ty); ctx.lineTo(tx, ty - th);
+    ctx.fill();
+  }
+
+  // Title panel
+  ctx.fillStyle = 'rgba(0,0,0,0.55)';
+  roundRect(CX - 220, 80, 440, 280, 18);
+  ctx.fill();
+
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+
+  // Title
+  ctx.font      = 'bold 52px Segoe UI, Arial';
+  ctx.fillStyle = '#FFE066';
+  ctx.fillText('GRAND SLALOM', CX, 155);
+
+  // Subtitle
+  ctx.font      = '16px Segoe UI, Arial';
+  ctx.fillStyle = 'rgba(255,255,255,0.8)';
+  ctx.fillText('A Pseudo-3D Skiing Adventure', CX, 195);
+
+  // Controls
+  ctx.font      = '14px Segoe UI, Arial';
+  ctx.fillStyle = 'rgba(255,255,255,0.65)';
+  ctx.fillText('← → Arrow Keys  to steer', CX, 235);
+  ctx.fillText('Ski through the gates — miss one, gain +2s penalty', CX, 258);
+  ctx.fillText('5 Levels  •  Beat the clock  •  Earn your score', CX, 280);
+
+  // Pulsing start prompt
+  const pulse = 0.6 + 0.4 * Math.sin(Date.now() / 500);
+  ctx.font      = `bold 22px Segoe UI, Arial`;
+  ctx.fillStyle = `rgba(255,230,80,${pulse})`;
+  ctx.fillText('Press SPACE or ENTER to start', CX, 328);
+
+  // Level preview list
+  ctx.fillStyle = 'rgba(255,255,255,0.12)';
+  roundRect(CX - 200, 380, 400, 185, 12);
+  ctx.fill();
+
+  ctx.font      = 'bold 13px Segoe UI, Arial';
+  ctx.fillStyle = '#FFE066';
+  ctx.fillText('THE MOUNTAINS', CX, 400);
+
+  LEVELS.forEach((l, i) => {
+    ctx.font      = '13px Segoe UI, Arial';
+    ctx.fillStyle = 'rgba(255,255,255,0.8)';
+    ctx.textAlign = 'left';
+    ctx.fillText(`${i+1}. ${l.name}`, CX - 175, 422 + i * 26);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = 'rgba(255,255,255,0.45)';
+    ctx.fillText(l.subtitle, CX + 175, 422 + i * 26);
+    ctx.textAlign = 'center';
+  });
+}
+
+function drawResultsScreen() {
+  // Background – reuse sky + slope feel of the finished level
+  const bgGrad = ctx.createLinearGradient(0, 0, 0, H);
+  bgGrad.addColorStop(0, lvl.skyTop);
+  bgGrad.addColorStop(0.45, lvl.skyBot);
+  bgGrad.addColorStop(0.45, lvl.snowA);
+  bgGrad.addColorStop(1, lvl.snowB);
+  ctx.fillStyle = bgGrad;
+  ctx.fillRect(0, 0, W, H);
+
+  // Panel
+  ctx.fillStyle = 'rgba(0,0,20,0.72)';
+  roundRect(CX - 260, 80, 520, 400, 20);
+  ctx.fill();
+
+  ctx.textAlign    = 'center';
+  ctx.textBaseline = 'middle';
+
+  // Heading
+  ctx.font      = 'bold 38px Segoe UI, Arial';
+  ctx.fillStyle = '#FFE066';
+  ctx.fillText('RUN COMPLETE!', CX, 128);
+
+  ctx.font      = '16px Segoe UI, Arial';
+  ctx.fillStyle = 'rgba(255,230,100,0.8)';
+  ctx.fillText(lvl.name, CX, 162);
+
+  // Divider
+  ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+  ctx.lineWidth   = 1;
+  ctx.beginPath(); ctx.moveTo(CX - 200, 182); ctx.lineTo(CX + 200, 182); ctx.stroke();
+
+  // Stats
+  const rows = [
+    { label: 'Run Time',    value: formatTime(resultTime),        color: '#FFFFFF' },
+    { label: 'Penalties',   value: `+${resultPenalty.toFixed(0)}s (${gatesMissed} gates)`, color: gatesMissed ? '#FF7070' : '#90FF90' },
+    { label: 'Total Time',  value: formatTime(resultTime + resultPenalty), color: '#FFD060' },
+    { label: 'SCORE',       value: resultScore.toLocaleString(),  color: '#60E8FF' },
+  ];
+
+  rows.forEach((r, i) => {
+    const ry = 218 + i * 58;
+
+    ctx.font      = '13px Segoe UI, Arial';
+    ctx.fillStyle = 'rgba(255,255,255,0.55)';
+    ctx.textAlign = 'left';
+    ctx.fillText(r.label, CX - 210, ry - 10);
+
+    ctx.font      = `bold ${i === 3 ? 32 : 26}px Segoe UI, Arial`;
+    ctx.fillStyle = r.color;
+    ctx.textAlign = 'right';
+    ctx.fillText(r.value, CX + 210, ry - 10);
+  });
+
+  // Divider
+  ctx.strokeStyle = 'rgba(255,255,255,0.2)';
+  ctx.beginPath(); ctx.moveTo(CX - 200, 452); ctx.lineTo(CX + 200, 452); ctx.stroke();
+
+  // Gate summary
+  ctx.font      = '14px Segoe UI, Arial';
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(255,255,255,0.7)';
+  ctx.fillText(`Gates: ${gatesPassed} ✓ passed   ${gatesMissed} ✗ missed`, CX, 466);
+
+  // Next action prompt
+  const pulse = 0.6 + 0.4 * Math.sin(Date.now() / 500);
+  ctx.font      = `bold 20px Segoe UI, Arial`;
+  const isLast  = currentLevel >= LEVELS.length - 1;
+  ctx.fillStyle = `rgba(255,230,80,${pulse})`;
+  ctx.fillText(
+    isLast ? 'Press SPACE — Return to Title' : `Press SPACE — Next: ${LEVELS[currentLevel + 1].name}`,
+    CX, 450 + 30
+  );
+}
+
+// Utility: draw a rounded rectangle path
+function roundRect(x, y, w, h, r) {
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x+w, y,   x+w, y+h, r);
+  ctx.arcTo(x+w, y+h, x,   y+h, r);
+  ctx.arcTo(x,   y+h, x,   y,   r);
+  ctx.arcTo(x,   y,   x+w, y,   r);
+  ctx.closePath();
+}
+
+// Utility: format a time (seconds) as M:SS.hh
+function formatTime(t) {
+  const m = Math.floor(t / 60);
+  const s = (t % 60).toFixed(2).padStart(5, '0');
+  return `${m}:${s}`;
+}
+
+
+// ================================================================
+//  10. GAME LOOP
+//  requestAnimationFrame keeps this running at the display refresh rate.
+//  We use delta-time (dt) so physics stay consistent across frame rates.
+// ================================================================
+
+function gameLoop(timestamp) {
+  const dt = lastTS > 0 ? timestamp - lastTS : 16.667;
+  lastTS = timestamp;
+
+  if (gameState === 'playing') update(dt);
+  render();
+
+  requestAnimationFrame(gameLoop);
+}
+
+// Kick it off!
+requestAnimationFrame(gameLoop);
+
+// ================================================================
+//  END OF GAME CODE
+// ================================================================
+</script>
+</body>
+</html>
