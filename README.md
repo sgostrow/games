@@ -1,6 +1,6 @@
 # Games
 
-A collection of browser-based games — no build tools, no frameworks, no dependencies. Just open an HTML file and play.
+A collection of browser-based games built in collaboration with my 8 year old son and Claude — no build tools, no frameworks, no dependencies. Just open an HTML file and play.
 
 ---
 
