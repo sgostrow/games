@@ -96,9 +96,9 @@ const LEVELS = [
     name: 'Alpine Meadow',
     subtitle: 'A gentle beginning',
     numGates: 14,
-    baseSpeed: 2.4,          // World units scrolled per 16 ms frame
-    maxSpeed: 4.5,
-    accel: 0.00045,          // Speed increase per ms
+    baseSpeed: 3.5,          // World units scrolled per 16 ms frame
+    maxSpeed: 6.5,
+    accel: 0.00060,          // Speed increase per ms
     gateInterval: 1900,      // World-Z gap between gate centres
     gateWidthMin: 210,       // Minimum gate opening (world units)
     gateWidthMax: 290,
@@ -307,29 +307,32 @@ function project(worldX, depth) {
 function depthOf(worldZ) { return worldZ - cameraZ; }
 
 // --- Gate generation ---
-// Gates are pairs of coloured poles the player must ski between.
+// Each gate is a single pole the player must ski around.
+// Gates alternate: blue pole on the left (go right) then red pole on the right (go left).
 function generateGates(l) {
   gates = [];
   let z = 3500;    // First gate spawns this far ahead of start position
-  let isRed = true;
 
   for (let i = 0; i < l.numGates; i++) {
-    // Random centre offset so the course weaves left and right
-    const cx   = (Math.random() * 2 - 1) * l.gateOffsetMax;
-    // Gate half-width in "world X" units (converts pixel width to world scale)
-    const hw   = (l.gateWidthMin + Math.random() * (l.gateWidthMax - l.gateWidthMin)) / ROAD_W / 2;
+    // Alternate which side the pole sits on.
+    // passRight=true  → pole is on the LEFT  → skier passes to the RIGHT → blue
+    // passRight=false → pole is on the RIGHT → skier passes to the LEFT  → red
+    const passRight = i % 2 === 0;
+    const side      = passRight ? -1 : 1;    // -1 = left side, +1 = right side
+
+    // Pole offset from centre (always on the required side)
+    const offset = 0.15 + Math.random() * l.gateOffsetMax * 0.85;
+    const poleX  = side * offset;
 
     gates.push({
-      z:       z,
-      cx:      cx,            // Centre X in world coords
-      leftX:   cx - hw,
-      rightX:  cx + hw,
-      color:   isRed ? 'red' : 'blue',
+      z,
+      poleX,
+      passRight,
+      color:   passRight ? 'blue' : 'red',
       passed:  false,
       missed:  false,
     });
 
-    isRed = !isRed;
     // Random interval between gates (±20 %) to keep the player guessing
     z += l.gateInterval * (0.82 + Math.random() * 0.36);
   }
@@ -438,10 +441,12 @@ function update(dt) {
     if (gate.passed || gate.missed) continue;
     const d = depthOf(gate.z);
 
-    // Gate has just passed behind the camera
+    // Gate has just passed behind the camera — check which side the skier is on
     if (d <= 0) {
-      const hit = player.x >= gate.leftX && player.x <= gate.rightX;
-      if (hit) {
+      const correct = gate.passRight
+        ? (player.x > gate.poleX)    // must be to the right of the pole
+        : (player.x < gate.poleX);   // must be to the left of the pole
+      if (correct) {
         gate.passed = true;
         gatesPassed++;
       } else {
@@ -549,6 +554,11 @@ function drawSlope() {
     ctx.fill();
   }
 
+  // Fill the area below the piste stripes (between GROUND and canvas bottom) with
+  // the near-plane snow colour so the skier stands on snow, not on the side terrain.
+  ctx.fillStyle = lvl.snowA;
+  ctx.fillRect(CX - ROAD_W, GROUND, ROAD_W * 2, H - GROUND);
+
   // Road edge lines (thin dark borders)
   ctx.strokeStyle = 'rgba(0,0,0,0.15)';
   ctx.lineWidth = 1.5;
@@ -616,7 +626,8 @@ function drawTree(tx, tz) {
 }
 
 // --- Gate poles ---
-// Each gate is a pair of coloured poles with a horizontal banner.
+// Each gate is a SINGLE pole with a triangular flag.
+// The flag points toward the open side the skier must pass through.
 function drawGate(gate) {
   const d = depthOf(gate.z);
   if (d <= 5) return;
@@ -625,51 +636,75 @@ function drawGate(gate) {
   const fogT  = Math.min(1, d / lvl.fogDist);
   const alpha = Math.max(0, 1 - fogT * 0.9);
 
-  const pL = project(gate.leftX,  d);
-  const pR = project(gate.rightX, d);
-  if (!pL || !pR) return;
+  const p = project(gate.poleX, d);
+  if (!p) return;
 
-  // Pole dimensions scale with distance
-  const poleH = 80  * pL.scale;
-  const poleW =  8  * pL.scale;
-  const flagH = 14  * pL.scale;
+  // Cull off-screen poles
+  if (p.x < -80 || p.x > W + 80) return;
 
-  // Colour scheme: red gates → red/white, blue gates → blue/white
+  // Dimensions scale with distance
+  const poleH  = 90  * p.scale;
+  const poleW  =  9  * p.scale;
+  const flagW  = 36  * p.scale;   // Flag width (horizontal reach)
+  const flagH2 = 22  * p.scale;   // Flag height
+
   const mainColor = gate.color === 'red' ? '#E02020' : '#1E6EDA';
-  const altColor  = '#FFFFFF';
+  const px = p.x, py = p.y;
 
   ctx.save();
   ctx.globalAlpha = alpha;
 
-  // Draw both poles
-  for (const [px, py] of [[pL.x, pL.y], [pR.x, pR.y]]) {
-    // Pole shaft (two-colour striped look)
-    ctx.fillStyle = mainColor;
-    ctx.fillRect(px - poleW/2, py - poleH, poleW, poleH * 0.6);
-    ctx.fillStyle = altColor;
-    ctx.fillRect(px - poleW/2, py - poleH * 0.4, poleW, poleH * 0.4);
-
-    // Pole cap ball
-    ctx.beginPath();
-    ctx.arc(px, py - poleH, poleW * 0.7, 0, Math.PI * 2);
-    ctx.fillStyle = mainColor;
-    ctx.fill();
-  }
-
-  // Horizontal banner connecting the two poles
-  const bannerY = Math.min(pL.y, pR.y) - poleH * 0.85;
-  const bannerH2 = flagH;
+  // --- Pole shaft (two-tone striped) ---
   ctx.fillStyle = mainColor;
-  ctx.fillRect(pL.x, bannerY, pR.x - pL.x, bannerH2);
+  ctx.fillRect(px - poleW/2, py - poleH,        poleW, poleH * 0.6);
+  ctx.fillStyle = '#FFFFFF';
+  ctx.fillRect(px - poleW/2, py - poleH * 0.4,  poleW, poleH * 0.4);
 
-  // Indicate passed/missed status
+  // --- Ball cap at top ---
+  ctx.beginPath();
+  ctx.arc(px, py - poleH, poleW * 0.75, 0, Math.PI * 2);
+  ctx.fillStyle = mainColor;
+  ctx.fill();
+
+  // --- Triangular flag pointing toward the open/correct side ---
+  // passRight=true → open side is to the right → flag points right (+1)
+  const flagDir = gate.passRight ? 1 : -1;
+  const fy      = py - poleH * 0.78;  // Flag base Y (near top of pole)
+
+  ctx.beginPath();
+  ctx.moveTo(px,                    fy);
+  ctx.lineTo(px + flagDir * flagW,  fy + flagH2 * 0.45);
+  ctx.lineTo(px,                    fy + flagH2);
+  ctx.closePath();
+  ctx.fillStyle = mainColor;
+  ctx.fill();
+  // Thin white outline for visibility
+  ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+  ctx.lineWidth   = 1;
+  ctx.stroke();
+
+  // --- Passed / missed status glow ---
   if (gate.passed) {
-    ctx.fillStyle = 'rgba(0,255,80,0.18)';
-    ctx.fillRect(pL.x, bannerY - poleH * 0.6, pR.x - pL.x, poleH * 0.6);
+    ctx.globalAlpha = alpha * 0.5;
+    ctx.strokeStyle = '#00FF60';
+    ctx.lineWidth   = 3 * p.scale;
+    const checkX = px + flagDir * flagW * 0.55;
+    ctx.beginPath();
+    ctx.moveTo(checkX - 6 * p.scale, fy + flagH2 * 0.5);
+    ctx.lineTo(checkX,                fy + flagH2 * 0.85);
+    ctx.lineTo(checkX + 9 * p.scale, fy + flagH2 * 0.15);
+    ctx.stroke();
   }
   if (gate.missed) {
-    ctx.fillStyle = 'rgba(255,0,0,0.22)';
-    ctx.fillRect(pL.x, bannerY - poleH * 0.6, pR.x - pL.x, poleH * 0.6);
+    ctx.globalAlpha = alpha * 0.6;
+    ctx.strokeStyle = '#FF3030';
+    ctx.lineWidth   = 3 * p.scale;
+    ctx.beginPath();
+    ctx.moveTo(px - 8 * p.scale, py - poleH * 0.3);
+    ctx.lineTo(px + 8 * p.scale, py - poleH * 0.55);
+    ctx.moveTo(px + 8 * p.scale, py - poleH * 0.3);
+    ctx.lineTo(px - 8 * p.scale, py - poleH * 0.55);
+    ctx.stroke();
   }
 
   ctx.restore();
@@ -699,7 +734,7 @@ function drawTint() {
 // A simple geometric figure seen from behind, leaning into turns.
 function drawSkier() {
   const sx = CX + player.x * ROAD_W;   // Screen X based on player position
-  const sy = GROUND + 10;               // Just above "ground" level
+  const sy = GROUND;                    // Sits at the near-plane snow surface
 
   ctx.save();
   ctx.translate(sx, sy);
