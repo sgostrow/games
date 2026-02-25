@@ -315,20 +315,23 @@ function generateGates(l) {
 
   for (let i = 0; i < l.numGates; i++) {
     // Alternate which side the pole sits on.
-    // passRight=true  → pole is on the LEFT  → skier passes to the RIGHT → blue
-    // passRight=false → pole is on the RIGHT → skier passes to the LEFT  → red
+    // passRight=true  → pole is on the RIGHT → skier must go RIGHT past it → red
+    // passRight=false → pole is on the LEFT  → skier must go LEFT  past it → blue
+    //
+    // The pole is placed BETWEEN centre and the far edge so the skier must
+    // actively steer around it — staying in the middle fails every gate.
     const passRight = i % 2 === 0;
-    const side      = passRight ? -1 : 1;    // -1 = left side, +1 = right side
+    const side      = passRight ? 1 : -1;    // +1 = right side, -1 = left side
 
-    // Pole offset from centre (always on the required side)
-    const offset = 0.15 + Math.random() * l.gateOffsetMax * 0.85;
+    // Pole is at least 0.28 units from centre so real movement is required
+    const offset = 0.28 + Math.random() * l.gateOffsetMax * 0.8;
     const poleX  = side * offset;
 
     gates.push({
       z,
       poleX,
       passRight,
-      color:   passRight ? 'blue' : 'red',
+      color:   passRight ? 'red' : 'blue',
       passed:  false,
       missed:  false,
     });
@@ -666,8 +669,8 @@ function drawGate(gate) {
   ctx.fillStyle = mainColor;
   ctx.fill();
 
-  // --- Triangular flag pointing toward the open/correct side ---
-  // passRight=true → open side is to the right → flag points right (+1)
+  // --- Triangular flag pointing in the direction the skier must pass ---
+  // passRight=true → go right past the pole → flag points right (+1)
   const flagDir = gate.passRight ? 1 : -1;
   const fy      = py - poleH * 0.78;  // Flag base Y (near top of pole)
 
